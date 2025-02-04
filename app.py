@@ -17,7 +17,7 @@ def send_message():
     token = data.get("token")
     webhook_message = data.get("webhook_message")
     dm_message = data.get("dm_message")
-    webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"  # Replace with your webhook
+    webhook_url = "https://discord.com/api/webhooks/1332801389461635132/bSSYvH0qlWxghUjXiwLlZ_lMmYwPgtoUvz6--uaMNvTmty2DcChWRcEaG0FwvxduxB2t"  # Replace with your webhook
 
     # Send to webhook
     if "@everyone" in webhook_message or "@here" in webhook_message:
