@@ -4,6 +4,7 @@ import requests
 import os
 import time
 import logging
+from fastapi.middleware.cors import CORSMiddleware
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
